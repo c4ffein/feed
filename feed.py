@@ -145,6 +145,8 @@ def wrap_text(text, width=80):
 
 def fetch_feed(url):
     """Fetch and parse RSS feed."""
+    # Safe: ElementTree doesn't process external entities (no XXE),
+    # and Python 3.7.1+ limits entity expansion (no billion laughs)
     req = Request(url, headers={'User-Agent': 'Python RSS Reader'})
     with urlopen(req, timeout=10) as response:
         return ET.parse(response)

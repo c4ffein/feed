@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Zero-dependency CLI RSS reader with HTML rendering."""
+"""
+feed - KISS cli RSS reader with HTML rendering
+"""
 
 import json
 import sys
@@ -45,7 +47,10 @@ FEEDS = load_feeds()
 
 
 class HTMLToTerminal(HTMLParser):
-    """Convert HTML to terminal-formatted text with ANSI codes."""
+    """
+    Convert HTML to terminal-formatted text with ANSI codes.
+    This is dirty as hell, vibed with Claude, will make a better version later.
+    """
 
     def __init__(self, width=80):
         super().__init__()

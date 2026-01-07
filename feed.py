@@ -344,10 +344,10 @@ def interactive_mode(entries, width=80):
             if written_number:
                 written_number = written_number[:-1]
             currently_writing_number = True  # Backspace always focuses the number bar
-        elif key == 'k':  # down
+        elif key == 'k' or key == '\x0b':  # down (k or Ctrl+K)
             selected = min(selected + 1, len(entries) - 1)
             currently_writing_number = False
-        elif key == 'i':  # up
+        elif key == 'i' or key == '\x1e':  # up (i or Ctrl+^ => as Ctrl+i is mapped as Ctrl+^ in my Alacritty)
             selected = max(selected - 1, 0)
             currently_writing_number = False
         elif key == 'K':  # down 10

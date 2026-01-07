@@ -246,30 +246,42 @@ def get_entries(tree):
     return entries
 
 
+def truncate_title(title, max_width):
+    """Truncate title with ellipsis if too long."""
+    if len(title) <= max_width:
+        return title
+    return title[:max_width - 1] + "…"
+
+
 def list_entries(entries, selected=None, offset=0, height=20, selection_active=True, state=None):
     """Display list of entries with optional selection highlight."""
+    term_width = shutil.get_terminal_size().columns
     print(f"{BOLD}Found {len(entries)} articles:{RESET}  {Color.DIM.value}[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]{RESET}\n")
     for i in range(offset, min(offset + height, len(entries))):
         entry = entries[i]
         date = entry['date'].split(' +')[0] if entry['date'] else ''
         source = entry.get('source', '')
         source_str = f"[{source}] " if source else ''
+        # Calculate prefix length: "  8. [source] " = 5 chars + source_str
+        prefix_len = 5 + len(source_str)
+        max_title_width = term_width - prefix_len - 1
+        title = truncate_title(entry['title'], max_title_width)
         is_read = state and is_article_read(state, entry)
         if i == selected:
             if selection_active:
                 # White/bright selection
-                print(f"{BG_WHITE}{BLACK}{i+1:3}. {source_str}{entry['title']}{RESET}")
+                print(f"{BG_WHITE}{BLACK}{i+1:3}. {source_str}{title}{RESET}")
                 print(f"{BG_WHITE}{BLACK}     {date}{RESET}")
             else:
                 # Dimmed selection (gray)
-                print(f"{Color.DIM.value}{REVERSE}{i+1:3}. {source_str}{entry['title']}{RESET}")
+                print(f"{Color.DIM.value}{REVERSE}{i+1:3}. {source_str}{title}{RESET}")
                 print(f"{Color.DIM.value}{REVERSE}     {date}{RESET}")
         elif is_read:
             # Read articles: title in red
-            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{Color.RED.value}{entry['title']}{RESET}")
+            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{Color.RED.value}{title}{RESET}")
             print(f"     {Color.DIM.value}{date}{RESET}")
         else:
-            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{BOLD}{entry['title']}{RESET}")
+            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{BOLD}{title}{RESET}")
             print(f"     {Color.DIM.value}{date}{RESET}")
 
 

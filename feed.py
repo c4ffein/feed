@@ -86,9 +86,11 @@ def load_state():
 
 
 def save_state(state):
-    """Save state to state file."""
-    with open(STATE_FILE, 'w') as f:
+    """Save state to state file atomically."""
+    tmp_file = STATE_FILE.with_suffix('.tmp')
+    with open(tmp_file, 'w') as f:
         json.dump(state, f, indent=2)
+    tmp_file.rename(STATE_FILE)
 
 
 def is_article_read(state, entry):

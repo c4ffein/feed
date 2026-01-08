@@ -28,6 +28,9 @@ BG_WHITE = '\033[47m'
 BLACK = '\033[30m'
 RESET = '\033[0m'
 CLEAR_SCREEN = '\033[2J\033[H'
+HOME = '\033[H'
+CLEAR_LINE = '\033[K'
+CLEAR_TO_END = '\033[J'
 
 
 def getch():
@@ -256,7 +259,7 @@ def truncate_title(title, max_width):
 def list_entries(entries, selected=None, offset=0, height=20, selection_active=True, state=None):
     """Display list of entries with optional selection highlight."""
     term_width = shutil.get_terminal_size().columns
-    print(f"{BOLD}Found {len(entries)} articles:{RESET}  {Color.DIM.value}[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]{RESET}\n")
+    print(f"{BOLD}Found {len(entries)} articles:{RESET}  {Color.DIM.value}[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]{RESET}{CLEAR_LINE}\n")
     for i in range(offset, min(offset + height, len(entries))):
         entry = entries[i]
         date = entry['date'].split(' +')[0] if entry['date'] else ''
@@ -270,19 +273,19 @@ def list_entries(entries, selected=None, offset=0, height=20, selection_active=T
         if i == selected:
             if selection_active:
                 # White/bright selection
-                print(f"{BG_WHITE}{BLACK}{i+1:3}. {source_str}{title}{RESET}")
-                print(f"{BG_WHITE}{BLACK}     {date}{RESET}")
+                print(f"{BG_WHITE}{BLACK}{i+1:3}. {source_str}{title}{RESET}{CLEAR_LINE}")
+                print(f"{BG_WHITE}{BLACK}     {date}{RESET}{CLEAR_LINE}")
             else:
                 # Dimmed selection (gray)
-                print(f"{Color.DIM.value}{REVERSE}{i+1:3}. {source_str}{title}{RESET}")
-                print(f"{Color.DIM.value}{REVERSE}     {date}{RESET}")
+                print(f"{Color.DIM.value}{REVERSE}{i+1:3}. {source_str}{title}{RESET}{CLEAR_LINE}")
+                print(f"{Color.DIM.value}{REVERSE}     {date}{RESET}{CLEAR_LINE}")
         elif is_read:
             # Read articles: title in red
-            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{Color.RED.value}{title}{RESET}")
-            print(f"     {Color.DIM.value}{date}{RESET}")
+            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{Color.RED.value}{title}{RESET}{CLEAR_LINE}")
+            print(f"     {Color.DIM.value}{date}{RESET}{CLEAR_LINE}")
         else:
-            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{BOLD}{title}{RESET}")
-            print(f"     {Color.DIM.value}{date}{RESET}")
+            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{BOLD}{title}{RESET}{CLEAR_LINE}")
+            print(f"     {Color.DIM.value}{date}{RESET}{CLEAR_LINE}")
 
 
 def show_article(entry, width=80):
@@ -303,9 +306,10 @@ def draw_number_bar(written_number, active, width):
     label = "> "
     num_str = written_number if written_number else ""
     if active:
-        print(f"\n{BG_WHITE}{BLACK}{label}{num_str}_{' ' * (width - len(label) - len(num_str) - 1)}{RESET}")
+        print(f"\n{BG_WHITE}{BLACK}{label}{num_str}_{' ' * (width - len(label) - len(num_str) - 1)}{RESET}{CLEAR_LINE}")
     else:
-        print(f"\n{Color.DIM.value}{label}{num_str}{RESET}")
+        print(f"\n{Color.DIM.value}{label}{num_str}{RESET}{CLEAR_LINE}")
+    print(CLEAR_TO_END, end='')  # Clear any leftover lines below
 
 
 def interactive_mode(entries, width=80):
@@ -318,6 +322,7 @@ def interactive_mode(entries, width=80):
     currently_writing_number = False
     state = load_state()
 
+    print(CLEAR_SCREEN, end='')  # Initial clear only
     while True:
         # Adjust offset to keep selection visible
         if selected < offset:
@@ -325,7 +330,7 @@ def interactive_mode(entries, width=80):
         elif selected >= offset + visible_count:
             offset = selected - visible_count + 1
 
-        print(CLEAR_SCREEN, end='')
+        print(HOME, end='')
         list_entries(entries, selected, offset, visible_count, selection_active=not currently_writing_number, state=state)
         draw_number_bar(written_number, currently_writing_number, width)
 

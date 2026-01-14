@@ -50,7 +50,11 @@ STATE_FILE = CONFIG_DIR / 'state.json'
 
 EXAMPLE_FEEDS = {
     'example': 'https://example.com/feed.xml',
-    'another': 'https://blog.example.org/rss',
+    'another_example': 'https://blog.example.org/rss',
+    'another_example_with_cookies': {
+        'url': 'https://forum.example.org/feed.xml',
+        'cookies': 'session_id=abc123'
+    },
 }
 
 
@@ -218,16 +222,19 @@ def wrap_text(text, width=80):
     return '\n\n'.join(wrapped)
 
 
-def fetch_feed(url):
+def fetch_feed(url, cookies=None):
     """Fetch and parse RSS feed."""
     # Safe: ElementTree doesn't process external entities (no XXE),
     # and Python 3.7.1+ limits entity expansion (no billion laughs)
-    req = Request(url, headers={'User-Agent': 'Python RSS Reader'})
+    headers = {'User-Agent': 'Python RSS Reader'}
+    if cookies:
+        headers['Cookie'] = cookies
+    req = Request(url, headers=headers)
     with urlopen(req, timeout=10) as response:
         return ET.parse(response)
 
 
-def get_entries(tree):
+def get_rss_entries(tree):
     """Extract entries from RSS feed."""
     entries = []
     ns = {'content': 'http://purl.org/rss/1.0/modules/content/'}
@@ -247,6 +254,63 @@ def get_entries(tree):
             entry['content'] = entry['description']
         entries.append(entry)
     return entries
+
+
+def get_atom_entries(root):
+    """Extract entries from Atom feed."""
+    entries = []
+    # Atom namespace
+    ATOM = '{http://www.w3.org/2005/Atom}'
+
+    atom_entries = root.findall(f'.//{ATOM}entry') or root.findall('.//entry')
+
+    for item in atom_entries:
+        # Get link href attribute (Atom uses <link href="..."/>)
+        # Prefer rel="alternate", fall back to first link
+        link = ''
+        for link_elem in item.findall(f'{ATOM}link') or item.findall('link'):
+            if link_elem.get('rel', 'alternate') == 'alternate':
+                link = link_elem.get('href', '')
+                break
+        if not link:
+            link_elem = item.find(f'{ATOM}link')
+            if link_elem is None:
+                link_elem = item.find('link')
+            link = link_elem.get('href', '') if link_elem is not None else ''
+
+        # Get content or summary
+        content_elem = item.find(f'{ATOM}content')
+        if content_elem is None:
+            content_elem = item.find('content')
+        summary_elem = item.find(f'{ATOM}summary')
+        if summary_elem is None:
+            summary_elem = item.find('summary')
+        content = ''
+        if content_elem is not None and content_elem.text:
+            content = content_elem.text
+        elif summary_elem is not None and summary_elem.text:
+            content = summary_elem.text
+
+        entry = {
+            'title': item.findtext(f'{ATOM}title', '') or item.findtext('title', ''),
+            'link': link,
+            'date': item.findtext(f'{ATOM}published', '') or item.findtext(f'{ATOM}updated', '') \
+                    or item.findtext('published', '') or item.findtext('updated', ''),
+            'description': content,
+            'content': content,
+        }
+        entries.append(entry)
+    return entries
+
+
+def get_entries(tree):
+    """Extract entries from RSS or Atom feed."""
+    root = tree.getroot()
+    # Detect Atom feed by root tag
+    if root.tag == '{http://www.w3.org/2005/Atom}feed' or root.tag == 'feed':
+        return get_atom_entries(root)
+    else:
+        return get_rss_entries(tree)
 
 
 def truncate_title(title, max_width):
@@ -382,28 +446,53 @@ def interactive_mode(entries, width=80):
 
 
 def parse_date(date_str):
-    """Parse RSS date string for sorting."""
+    """Parse RSS (RFC 822) or Atom (ISO 8601) date string for sorting."""
     from email.utils import parsedate_to_datetime
+    from datetime import datetime
+    if not date_str:
+        return None
+    # Try RFC 822 (RSS)
     try:
         return parsedate_to_datetime(date_str)
     except Exception:
+        pass
+    # Try ISO 8601 (Atom)
+    try:
+        # Handle Z suffix and timezone
+        date_str = date_str.replace('Z', '+00:00')
+        return datetime.fromisoformat(date_str)
+    except Exception:
         return None
+
+
+def get_feed_config(feed_value):
+    """Extract url and cookies from feed config (string or dict)."""
+    if isinstance(feed_value, str):
+        return feed_value, None
+    return feed_value.get('url', ''), feed_value.get('cookies')
 
 
 def fetch_all_feeds():
     """Fetch all configured feeds and merge entries sorted by date."""
     all_entries = []
-    for name, url in FEEDS.items():
+    errors = []
+    for name, feed_value in FEEDS.items():
+        url, cookies = get_feed_config(feed_value)
         print(f"{Color.DIM.value}Fetching {name}...{RESET}")
         try:
-            tree = fetch_feed(url)
+            tree = fetch_feed(url, cookies)
             entries = get_entries(tree)
             for entry in entries:
                 entry['source'] = name
             all_entries.extend(entries)
         except Exception as e:
+            errors.append(f"{name}: {e}")
             print(f"{Color.RED.value}Error fetching {name}: {e}{RESET}")
-    all_entries.sort(key=lambda e: parse_date(e['date']) or '', reverse=True)
+    if errors:
+        print(f"\n{Color.DIM.value}Press any key to continue...{RESET}")
+        getch()
+    from datetime import datetime
+    all_entries.sort(key=lambda e: parse_date(e['date']) or datetime.min, reverse=True)
     return all_entries
 
 
@@ -433,15 +522,16 @@ def main():
         entries = fetch_all_feeds()
     else:
         # Resolve single feed URL
-        url = FEEDS.get(args.feed, args.feed)
-        if not url.startswith('http'):
+        feed_value = FEEDS.get(args.feed, args.feed)
+        if isinstance(feed_value, str) and not feed_value.startswith('http'):
             print(f"Unknown feed: {args.feed}")
             print(f"Available shortcuts: {', '.join(FEEDS.keys())}")
             sys.exit(1)
 
+        url, cookies = get_feed_config(feed_value)
         print(f"{Color.DIM.value}Fetching {url}...{RESET}")
         try:
-            tree = fetch_feed(url)
+            tree = fetch_feed(url, cookies)
             entries = get_entries(tree)
         except Exception as e:
             print(f"Error fetching feed: {e}")

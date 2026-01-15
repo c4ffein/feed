@@ -472,25 +472,47 @@ def get_feed_config(feed_value):
     return feed_value.get('url', ''), feed_value.get('cookies')
 
 
+def fetch_single_feed(name, feed_value):
+    """Fetch a single feed and return (name, entries) or (name, error)."""
+    url, cookies = get_feed_config(feed_value)
+    try:
+        tree = fetch_feed(url, cookies)
+        entries = get_entries(tree)
+        for entry in entries:
+            entry['source'] = name
+        return (name, entries, None)
+    except Exception as e:
+        return (name, [], e)
+
+
 def fetch_all_feeds():
-    """Fetch all configured feeds and merge entries sorted by date."""
+    """Fetch all configured feeds concurrently and merge entries sorted by date."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     all_entries = []
     errors = []
-    for name, feed_value in FEEDS.items():
-        url, cookies = get_feed_config(feed_value)
-        print(f"{Color.DIM.value}Fetching {name}...{RESET}")
-        try:
-            tree = fetch_feed(url, cookies)
-            entries = get_entries(tree)
-            for entry in entries:
-                entry['source'] = name
-            all_entries.extend(entries)
-        except Exception as e:
-            errors.append(f"{name}: {e}")
-            print(f"{Color.RED.value}Error fetching {name}: {e}{RESET}")
+
+    print(f"{Color.DIM.value}Fetching {len(FEEDS)} feeds...{RESET}")
+
+    with ThreadPoolExecutor(max_workers=len(FEEDS)) as executor:
+        futures = {
+            executor.submit(fetch_single_feed, name, feed_value): name
+            for name, feed_value in FEEDS.items()
+        }
+
+        for future in as_completed(futures):
+            name, entries, error = future.result()
+            if error:
+                errors.append(f"{name}: {error}")
+                print(f"{Color.RED.value}Error fetching {name}: {error}{RESET}")
+            else:
+                print(f"{Color.DIM.value}Fetched {name} ({len(entries)} articles){RESET}")
+                all_entries.extend(entries)
+
     if errors:
         print(f"\n{Color.DIM.value}Press any key to continue...{RESET}")
         getch()
+
     from datetime import datetime
     all_entries.sort(key=lambda e: parse_date(e['date']) or datetime.min, reverse=True)
     return all_entries

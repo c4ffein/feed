@@ -237,14 +237,21 @@ def fetch_feed(url, cookies=None):
 def get_rss_entries(tree):
     """Extract entries from RSS feed."""
     entries = []
-    ns = {'content': 'http://purl.org/rss/1.0/modules/content/'}
+    ns = {
+        'content': 'http://purl.org/rss/1.0/modules/content/',
+        'dc': 'http://purl.org/dc/elements/1.1/',
+    }
 
     for item in tree.findall('.//item'):
+        # Get author from dc:creator or author element
+        author = item.findtext('dc:creator', '', ns) or item.findtext('author', '')
+
         entry = {
             'title': item.findtext('title', ''),
             'link': item.findtext('link', ''),
             'date': item.findtext('pubDate', ''),
             'description': item.findtext('description', ''),
+            'author': author,
         }
         # Try to get full content
         content = item.find('content:encoded', ns)
@@ -291,6 +298,14 @@ def get_atom_entries(root):
         elif summary_elem is not None and summary_elem.text:
             content = summary_elem.text
 
+        # Get author name
+        author_elem = item.find(f'{ATOM}author')
+        if author_elem is None:
+            author_elem = item.find('author')
+        author = ''
+        if author_elem is not None:
+            author = author_elem.findtext(f'{ATOM}name', '') or author_elem.findtext('name', '')
+
         entry = {
             'title': item.findtext(f'{ATOM}title', '') or item.findtext('title', ''),
             'link': link,
@@ -298,6 +313,7 @@ def get_atom_entries(root):
                     or item.findtext('published', '') or item.findtext('updated', ''),
             'description': content,
             'content': content,
+            'author': author,
         }
         entries.append(entry)
     return entries
@@ -356,6 +372,9 @@ def show_article(entry, width=80):
     """Display a single article."""
     print(f"\n{'─' * width}")
     print(f"{BOLD}{Color.PURP.value}{entry['title']}{RESET}")
+    author = entry.get('author', '')
+    if author:
+        print(f"{Color.DIM.value}by {author}{RESET}")
     print(f"{Color.DIM.value}{entry['date']}{RESET}")
     print(f"{Color.PURP.value}{entry['link']}{RESET}")
     print(f"{'─' * width}\n")

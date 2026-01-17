@@ -423,7 +423,7 @@ def interactive_mode(entries, width=80):
             print()
             break
 
-        if key == 'q' or key == '\x03':  # q or Ctrl+C
+        if key == 'q' or key == '\x03' or key == '\x1b':  # q, Ctrl+C, or Escape
             break
         elif key in '0123456789':
             written_number += key

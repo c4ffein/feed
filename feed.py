@@ -3,6 +3,7 @@
 
 import base64
 import json
+import select
 import shutil
 import sys
 import termios
@@ -33,16 +34,97 @@ CLEAR_LINE = '\033[K'
 CLEAR_TO_END = '\033[J'
 
 
-def getch():
-    """Read a single character from stdin without waiting for Enter."""
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return ch
+class Term:
+    """Static utility class for terminal operations."""
+
+    @staticmethod
+    def getch() -> str:
+        """Read a single character/escape sequence from stdin.
+
+        Uses select with 0.1s timeout after ESC to distinguish
+        arrow keys (ESC + sequence) from standalone Escape key.
+        """
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            # If ESC, check for arrow key sequence
+            if ch == '\x1b':
+                # Wait up to 0.1s for more input
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    ch2 = sys.stdin.read(1)
+                    if ch2 == '[':
+                        ch3 = sys.stdin.read(1)
+                        # Return arrow key codes
+                        if ch3 == 'A':
+                            return 'UP'
+                        elif ch3 == 'B':
+                            return 'DOWN'
+                        elif ch3 == 'C':
+                            return 'RIGHT'
+                        elif ch3 == 'D':
+                            return 'LEFT'
+                # Standalone ESC or unknown sequence
+            return ch
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    @staticmethod
+    def size() -> tuple[int, int]:
+        """Return terminal (columns, lines)."""
+        sz = shutil.get_terminal_size()
+        return sz.columns, sz.lines
+
+    @staticmethod
+    def write(text: str) -> None:
+        """Write text directly to stdout."""
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+
+class Screen:
+    """Buffered screen rendering to reduce SSH flicker."""
+
+    def __init__(self):
+        self.buf: list[str] = []
+
+    def clear(self) -> None:
+        """Add clear screen sequence to buffer."""
+        self.buf.append(CLEAR_SCREEN)
+
+    def home(self) -> None:
+        """Add cursor home sequence to buffer."""
+        self.buf.append(HOME)
+
+    def move(self, row: int, col: int) -> None:
+        """Add cursor move sequence to buffer."""
+        self.buf.append(f'\033[{row};{col}H')
+
+    def write(self, text: str) -> None:
+        """Add text to buffer."""
+        self.buf.append(text)
+
+    def clear_line(self) -> None:
+        """Add clear line sequence to buffer."""
+        self.buf.append(CLEAR_LINE)
+
+    def clear_to_end(self) -> None:
+        """Add clear to end of screen sequence to buffer."""
+        self.buf.append(CLEAR_TO_END)
+
+    def writeln(self, text: str) -> None:
+        """Add text with newline and clear line to buffer."""
+        self.buf.append(text)
+        self.buf.append(CLEAR_LINE)
+        self.buf.append('\n')
+
+    def flush(self) -> None:
+        """Write entire buffer to stdout in single call, then clear buffer."""
+        sys.stdout.write(''.join(self.buf))
+        sys.stdout.flush()
+        self.buf.clear()
+
 
 CONFIG_DIR = Path.home() / '.config' / 'feed'
 CONFIG_FILE = CONFIG_DIR / 'config.json'
@@ -336,10 +418,10 @@ def truncate_title(title, max_width):
     return title[:max_width - 1] + "…"
 
 
-def list_entries(entries, selected=None, offset=0, height=20, selection_active=True, state=None):
+def list_entries(scr, entries, selected=None, offset=0, height=20, selection_active=True, state=None):
     """Display list of entries with optional selection highlight."""
-    term_width = shutil.get_terminal_size().columns
-    print(f"{BOLD}Found {len(entries)} articles:{RESET}  {Color.DIM.value}[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]{RESET}{CLEAR_LINE}\n")
+    term_width, _ = Term.size()
+    scr.writeln(f"{BOLD}Found {len(entries)} articles:{RESET}  {Color.DIM.value}[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]{RESET}")
     for i in range(offset, min(offset + height, len(entries))):
         entry = entries[i]
         date = entry['date'].split(' +')[0] if entry['date'] else ''
@@ -353,19 +435,19 @@ def list_entries(entries, selected=None, offset=0, height=20, selection_active=T
         if i == selected:
             if selection_active:
                 # White/bright selection
-                print(f"{BG_WHITE}{BLACK}{i+1:3}. {source_str}{title}{RESET}{CLEAR_LINE}")
-                print(f"{BG_WHITE}{BLACK}     {date}{RESET}{CLEAR_LINE}")
+                scr.writeln(f"{BG_WHITE}{BLACK}{i+1:3}. {source_str}{title}{RESET}")
+                scr.writeln(f"{BG_WHITE}{BLACK}     {date}{RESET}")
             else:
                 # Dimmed selection (gray)
-                print(f"{Color.DIM.value}{REVERSE}{i+1:3}. {source_str}{title}{RESET}{CLEAR_LINE}")
-                print(f"{Color.DIM.value}{REVERSE}     {date}{RESET}{CLEAR_LINE}")
+                scr.writeln(f"{Color.DIM.value}{REVERSE}{i+1:3}. {source_str}{title}{RESET}")
+                scr.writeln(f"{Color.DIM.value}{REVERSE}     {date}{RESET}")
         elif is_read:
             # Read articles: title in red
-            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{Color.RED.value}{title}{RESET}{CLEAR_LINE}")
-            print(f"     {Color.DIM.value}{date}{RESET}{CLEAR_LINE}")
+            scr.writeln(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{Color.RED.value}{title}{RESET}")
+            scr.writeln(f"     {Color.DIM.value}{date}{RESET}")
         else:
-            print(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{BOLD}{title}{RESET}{CLEAR_LINE}")
-            print(f"     {Color.DIM.value}{date}{RESET}{CLEAR_LINE}")
+            scr.writeln(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{BOLD}{title}{RESET}")
+            scr.writeln(f"     {Color.DIM.value}{date}{RESET}")
 
 
 def show_article(entry, width=80):
@@ -384,28 +466,31 @@ def show_article(entry, width=80):
     print(f"\n{'─' * width}")
 
 
-def draw_number_bar(written_number, active, width):
+def draw_number_bar(scr, written_number, active, width):
     """Draw the number input bar at the bottom."""
     label = "> "
     num_str = written_number if written_number else ""
     if active:
-        print(f"\n{BG_WHITE}{BLACK}{label}{num_str}_{' ' * (width - len(label) - len(num_str) - 1)}{RESET}{CLEAR_LINE}")
+        scr.writeln(f"{BG_WHITE}{BLACK}{label}{num_str}_{' ' * (width - len(label) - len(num_str) - 1)}{RESET}")
     else:
-        print(f"\n{Color.DIM.value}{label}{num_str}{RESET}{CLEAR_LINE}")
-    print(CLEAR_TO_END, end='')  # Clear any leftover lines below
+        scr.writeln(f"{Color.DIM.value}{label}{num_str}{RESET}")
+    scr.clear_to_end()  # Clear any leftover lines below
 
 
 def interactive_mode(entries, width=80):
     """Interactive article browser with vim-style navigation."""
     selected = 0
-    term_height = shutil.get_terminal_size().lines - 6  # Leave room for header/footer/number bar
+    _, term_height = Term.size()
+    term_height -= 6  # Leave room for header/footer/number bar
     visible_count = max(1, term_height // 2)  # 2 lines per entry
     offset = 0
     written_number = ""
     currently_writing_number = False
     state = load_state()
+    scr = Screen()
 
-    print(CLEAR_SCREEN, end='')  # Initial clear only
+    scr.clear()
+    scr.flush()
     while True:
         # Adjust offset to keep selection visible
         if selected < offset:
@@ -413,12 +498,13 @@ def interactive_mode(entries, width=80):
         elif selected >= offset + visible_count:
             offset = selected - visible_count + 1
 
-        print(HOME, end='')
-        list_entries(entries, selected, offset, visible_count, selection_active=not currently_writing_number, state=state)
-        draw_number_bar(written_number, currently_writing_number, width)
+        scr.home()
+        list_entries(scr, entries, selected, offset, visible_count, selection_active=not currently_writing_number, state=state)
+        draw_number_bar(scr, written_number, currently_writing_number, width)
+        scr.flush()
 
         try:
-            key = getch()
+            key = Term.getch()
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -432,10 +518,10 @@ def interactive_mode(entries, width=80):
             if written_number:
                 written_number = written_number[:-1]
             currently_writing_number = True  # Backspace always focuses the number bar
-        elif key == 'k' or key == '\x0b':  # down (k or Ctrl+K)
+        elif key == 'k' or key == '\x0b' or key == 'DOWN':  # down (k, Ctrl+K, or arrow)
             selected = min(selected + 1, len(entries) - 1)
             currently_writing_number = False
-        elif key == 'i' or key == '\x1e':  # up (i or Ctrl+^ => as Ctrl+i is mapped as Ctrl+^ in my Alacritty)
+        elif key == 'i' or key == '\x1e' or key == 'UP':  # up (i, Ctrl+^, or arrow)
             selected = max(selected - 1, 0)
             currently_writing_number = False
         elif key == 'K':  # down 10
@@ -454,14 +540,14 @@ def interactive_mode(entries, width=80):
                     print(CLEAR_SCREEN, end='')
                     show_article(entries[selected], width)
                     print(f"\n{Color.DIM.value}Press any key to continue...{RESET}")
-                    getch()
+                    Term.getch()
                 written_number = ""
                 currently_writing_number = False
             else:
                 print(CLEAR_SCREEN, end='')
                 show_article(entries[selected], width)
                 print(f"\n{Color.DIM.value}Press any key to continue...{RESET}")
-                getch()
+                Term.getch()
 
 
 def parse_date(date_str):
@@ -530,7 +616,7 @@ def fetch_all_feeds():
 
     if errors:
         print(f"\n{Color.DIM.value}Press any key to continue...{RESET}")
-        getch()
+        Term.getch()
 
     from datetime import datetime
     all_entries.sort(key=lambda e: parse_date(e['date']) or datetime.min, reverse=True)
@@ -589,7 +675,9 @@ def main():
             print(f"Invalid article number. Choose 1-{len(entries)}")
             sys.exit(1)
     elif args.list:
-        list_entries(entries, height=len(entries))
+        scr = Screen()
+        list_entries(scr, entries, height=len(entries))
+        scr.flush()
     else:
         interactive_mode(entries, args.width)
 

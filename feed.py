@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Zero-dependency CLI RSS reader with HTML rendering."""
+"""feed - KISS cli RSS reader with HTML rendering"""
 
 import base64
 import json
@@ -625,7 +625,7 @@ def fetch_all_feeds():
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='Zero-dep CLI RSS reader')
+    parser = argparse.ArgumentParser(description='feed - KISS cli RSS reader with HTML rendering')
     parser.add_argument('feed', nargs='?', default=None,
                         help=f"Feed URL or shortcut: {', '.join(FEEDS.keys())} (default: all)")
     parser.add_argument('-l', '--list', action='store_true',

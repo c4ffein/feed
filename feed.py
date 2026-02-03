@@ -267,7 +267,15 @@ class HTMLToTerminal(HTMLParser):
         if self.skip_content:
             return
         if not self.in_pre:
-            data = ' '.join(data.split())  # normalize whitespace
+            # Normalize whitespace but preserve leading/trailing space
+            has_leading = data and data[0].isspace()
+            has_trailing = data and data[-1].isspace()
+            data = ' '.join(data.split())
+            if data:
+                if has_leading:
+                    data = ' ' + data
+                if has_trailing:
+                    data = data + ' '
         if data:
             self.output.append(data)
 

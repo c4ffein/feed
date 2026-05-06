@@ -1,7 +1,7 @@
 [project]
 name = "feed"
 version = "0.1.0"
-description = "KISS CLI RSS reader, in Python"
+description = "KISS CLI RSS reader"
 requires-python = ">=3.10"
 
 [tool.uv]

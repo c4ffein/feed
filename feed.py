@@ -238,11 +238,9 @@ def cache_save_entry(entry):
         try:
             with open(path) as f:
                 doc = json.load(f)
-            doc['last_seen_at'] = now
-        except (OSError, json.JSONDecodeError):
-            doc = {'first_seen_at': now, 'last_seen_at': now,
-                   'source': source, 'url': entry['link'],
-                   'raw_xml': raw_xml, 'parsed': parsed}
+        except (OSError, json.JSONDecodeError) as e:
+            raise FeedError(f"corrupt cache file {path}: {e}") from e
+        doc['last_seen_at'] = now
     else:
         doc = {'first_seen_at': now, 'last_seen_at': now,
                'source': source, 'url': entry['link'],
@@ -285,8 +283,8 @@ def cache_load_entries():
             try:
                 with open(art_file) as f:
                     doc = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                continue
+            except (OSError, json.JSONDecodeError) as e:
+                raise FeedError(f"corrupt cache file {art_file}: {e}") from e
             parsed = doc.get('parsed') or {}
             parsed.setdefault('source', doc.get('source', src_dir.name))
             entries.append(parsed)

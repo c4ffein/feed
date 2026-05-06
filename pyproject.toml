@@ -1,0 +1,67 @@
+[project]
+name = "feed"
+version = "0.1.0"
+description = "KISS CLI RSS reader, in Python"
+requires-python = ">=3.10"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["ruff>=0.7"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = "single"
+multiline-quotes = "single"
+docstring-quotes = "double"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # Function complexity (explicitly excluded)
+    "C901",     # mccabe complexity
+    "PLR0911",  # too many return statements
+    "PLR0912",  # too many branches
+    "PLR0913",  # too many arguments
+    "PLR0914",  # too many local variables
+    "PLR0915",  # too many statements
+    "PLR0916",  # too many boolean expressions
+    "PLR0917",  # too many positional arguments
+
+    # Style preferences for this codebase
+    "Q000",     # single quotes are fine
+    "Q001",     # multi-line string single quotes
+    "COM812",   # trailing comma — formatter handles
+    "D",        # no project-wide docstring policy
+    "ANN",      # no type-annotation policy
+    "T201",     # this is a CLI; print() is intentional
+    "BLE001",   # broad `except Exception` is intentional in feed-fetch error reporting
+    "PLW0603",  # disable_colors() and tests deliberately mutate module globals
+    "DTZ901",   # datetime.min is used as a sort fallback for missing dates
+    "FBT002",   # boolean-default positional arguments are fine here
+    "TRY300",   # `else` after try is opinionated
+    "TRY003",   # long exception messages
+    "TRY301",   # raise within try
+    "PTH123",   # `open(path)` with context manager is idiomatic enough
+    "S110",     # silenced log_message in test HTTP server is intentional
+    "EM101",    # exception message strings inline are fine
+    "EM102",    # f-string in raise is fine
+    "S310",     # urlopen on user-configured RSS URLs is the whole point
+    "S314",     # ElementTree is XXE-safe in Python 3.7.1+ (see fetch_feed comment)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "PT009",    # this project uses unittest, not pytest
+    "PT027",    # ditto: assertRaises, not pytest.raises
+    "SLF001",   # tests access private members deliberately
+    "S101",     # asserts in tests are the point
+    "INP001",   # tests/ is a package
+]

@@ -14,14 +14,6 @@ dev = ["ruff>=0.7"]
 line-length = 120
 target-version = "py310"
 
-[tool.ruff.format]
-quote-style = "single"
-
-[tool.ruff.lint.flake8-quotes]
-inline-quotes = "single"
-multiline-quotes = "single"
-docstring-quotes = "double"
-
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
@@ -36,13 +28,10 @@ ignore = [
     "PLR0917",  # too many positional arguments
 
     # Style preferences for this codebase
-    "Q000",     # single quotes are fine
-    "Q001",     # multi-line string single quotes
     "COM812",   # trailing comma — formatter handles
     "D",        # no project-wide docstring policy
-    "ANN",      # no type-annotation policy
+    "ANN",      # gradual annotations on the public surface only
     "T201",     # this is a CLI; print() is intentional
-    "BLE001",   # broad `except Exception` is intentional in feed-fetch error reporting
     "PLW0603",  # disable_colors() and tests deliberately mutate module globals
     "DTZ901",   # datetime.min is used as a sort fallback for missing dates
     "FBT002",   # boolean-default positional arguments are fine here
@@ -50,7 +39,6 @@ ignore = [
     "TRY003",   # long exception messages
     "TRY301",   # raise within try
     "PTH123",   # `open(path)` with context manager is idiomatic enough
-    "S110",     # silenced log_message in test HTTP server is intentional
     "EM101",    # exception message strings inline are fine
     "EM102",    # f-string in raise is fine
     "S310",     # urlopen on user-configured RSS URLs is the whole point
@@ -64,4 +52,6 @@ ignore = [
     "SLF001",   # tests access private members deliberately
     "S101",     # asserts in tests are the point
     "INP001",   # tests/ is a package
+    "S110",     # silenced log_message in test HTTP server is intentional
+    "PLR2004",  # magic numbers in assertions are fine
 ]

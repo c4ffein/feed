@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """feed - KISS cli RSS reader with HTML rendering"""
 
+import argparse
 import base64
 import json
 import select
@@ -9,6 +10,9 @@ import sys
 import termios
 import textwrap
 import tty
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -17,11 +21,11 @@ from urllib.request import urlopen, Request
 from xml.etree import ElementTree as ET
 
 # ANSI escape codes
-from enum import Enum
-
-colors = {"RED": "31", "GREEN": "32", "PURP": "34", "DIM": "90", "WHITE": "39"}
-Color = Enum("Color", [(k, f"\033[{v}m") for k, v in colors.items()])
-
+RED = '\033[31m'
+GREEN = '\033[32m'
+PURP = '\033[34m'
+DIM = '\033[90m'
+WHITE = '\033[39m'
 BOLD = '\033[1m'
 ITALIC = '\033[3m'
 REVERSE = '\033[7m'
@@ -32,6 +36,18 @@ CLEAR_SCREEN = '\033[2J\033[H'
 HOME = '\033[H'
 CLEAR_LINE = '\033[K'
 CLEAR_TO_END = '\033[J'
+
+
+def disable_colors():
+    """Wipe all ANSI codes to empty strings (for --no-color)."""
+    global RED, GREEN, PURP, DIM, WHITE
+    global BOLD, ITALIC, REVERSE, BG_WHITE, BLACK, RESET
+    RED = GREEN = PURP = DIM = WHITE = ''
+    BOLD = ITALIC = REVERSE = BG_WHITE = BLACK = RESET = ''
+
+
+class FeedError(Exception):
+    pass
 
 
 class Term:
@@ -129,6 +145,8 @@ class Screen:
 CONFIG_DIR = Path.home() / '.config' / 'feed'
 CONFIG_FILE = CONFIG_DIR / 'config.json'
 STATE_FILE = CONFIG_DIR / 'state.json'
+CACHE_DIR = Path.home() / '.cache' / 'feed'
+ARTICLES_DIR = CACHE_DIR / 'articles'
 
 EXAMPLE_FEEDS = {
     'example': 'https://example.com/feed.xml',
@@ -153,12 +171,9 @@ def load_feeds():
         sys.exit(1)
 
 
-FEEDS = load_feeds()
-
-
 def get_article_id(url):
-    """Generate a unique ID from URL using base64 encoding."""
-    return base64.b64encode(url.encode()).decode()
+    """Generate a filesystem-safe unique ID from URL."""
+    return base64.urlsafe_b64encode(url.encode()).decode()
 
 
 def get_source_from_url(url):
@@ -166,11 +181,23 @@ def get_source_from_url(url):
     return urlparse(url).netloc
 
 
+def _migrate_state_ids(state):
+    """Rewrite legacy base64 IDs (with /, +) to urlsafe form."""
+    sources = state.get("articles", {}).get("sources", {})
+    for src, articles in list(sources.items()):
+        if any(('/' in k or '+' in k) for k in articles):
+            sources[src] = {
+                k.replace('/', '_').replace('+', '-'): v
+                for k, v in articles.items()
+            }
+    return state
+
+
 def load_state():
     """Load state from state file."""
     if STATE_FILE.exists():
         with open(STATE_FILE) as f:
-            return json.load(f)
+            return _migrate_state_ids(json.load(f))
     return {"articles": {"sources": {}}}
 
 
@@ -180,6 +207,90 @@ def save_state(state):
     with open(tmp_file, 'w') as f:
         json.dump(state, f, indent=2)
     tmp_file.rename(STATE_FILE)
+
+
+def _safe_dirname(name):
+    """Replace filesystem-unsafe chars in a source name."""
+    return ''.join(c if c.isalnum() or c in '-_.' else '_' for c in name)
+
+
+def _article_cache_path(source, article_id):
+    return ARTICLES_DIR / _safe_dirname(source) / f'{article_id}.json'
+
+
+def cache_save_entry(entry):
+    """Write or update one article's cache file. Atomic via tmp + rename.
+
+    On first save: writes first_seen_at, last_seen_at, source, url, raw_xml,
+    parsed. On re-save: only last_seen_at is updated; raw_xml + parsed are
+    preserved as originally captured.
+    """
+    source = entry['source']
+    article_id = get_article_id(entry['link'])
+    path = _article_cache_path(source, article_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc).isoformat()
+    raw_xml = entry.get('_raw_xml')
+    parsed = {k: v for k, v in entry.items() if not k.startswith('_')}
+
+    if path.exists():
+        try:
+            with open(path) as f:
+                doc = json.load(f)
+            doc['last_seen_at'] = now
+        except (OSError, json.JSONDecodeError):
+            doc = {'first_seen_at': now, 'last_seen_at': now,
+                   'source': source, 'url': entry['link'],
+                   'raw_xml': raw_xml, 'parsed': parsed}
+    else:
+        doc = {'first_seen_at': now, 'last_seen_at': now,
+               'source': source, 'url': entry['link'],
+               'raw_xml': raw_xml, 'parsed': parsed}
+
+    tmp = path.with_suffix('.json.tmp')
+    with open(tmp, 'w') as f:
+        json.dump(doc, f, indent=2)
+    tmp.rename(path)
+
+
+def cache_save_entries(entries):
+    """Save many entries; per-entry failures are logged and skipped.
+
+    Returns True iff every (non-skipped) entry was written successfully.
+    """
+    all_ok = True
+    for entry in entries:
+        if not entry.get('link'):
+            continue
+        try:
+            cache_save_entry(entry)
+        except OSError as e:
+            print(f"{RED}cache write failed for {entry.get('link')}: {e}{RESET}")
+            all_ok = False
+    return all_ok
+
+
+def cache_load_entries():
+    """Walk the article cache and return all parsed entries."""
+    entries = []
+    if not ARTICLES_DIR.exists():
+        return entries
+    for src_dir in ARTICLES_DIR.iterdir():
+        if not src_dir.is_dir():
+            continue
+        for art_file in src_dir.iterdir():
+            if art_file.suffix != '.json':
+                continue
+            try:
+                with open(art_file) as f:
+                    doc = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            parsed = doc.get('parsed') or {}
+            parsed.setdefault('source', doc.get('source', src_dir.name))
+            entries.append(parsed)
+    return entries
 
 
 def is_article_read(state, entry):
@@ -224,11 +335,11 @@ class HTMLToTerminal(HTMLParser):
         elif tag in ('em', 'i'):
             self.output.append(ITALIC)
         elif tag == 'a':
-            self.output.append(Color.PURP.value)
+            self.output.append(PURP)
         elif tag == 'code':
-            self.output.append(Color.GREEN.value)
+            self.output.append(GREEN)
         elif tag in ('h1', 'h2', 'h3', 'h4'):
-            self.output.append(f'\n\n{BOLD}{Color.PURP.value}')
+            self.output.append(f'\n\n{BOLD}{PURP}')
         elif tag == 'p':
             self.output.append('\n\n')
         elif tag == 'br':
@@ -240,12 +351,12 @@ class HTMLToTerminal(HTMLParser):
             self.output.append('\n' + '  ' * self.list_depth + '• ')
         elif tag == 'pre':
             self.in_pre = True
-            self.output.append(f'\n{Color.DIM.value}')
+            self.output.append(f'\n{DIM}')
         elif tag == 'blockquote':
-            self.output.append(f'\n{Color.DIM.value}  │ ')
+            self.output.append(f'\n{DIM}  │ ')
         elif tag == 'img':
             alt = dict(attrs).get('alt', 'image')
-            self.output.append(f'{Color.DIM.value}[{alt}]{RESET}')
+            self.output.append(f'{DIM}[{alt}]{RESET}')
 
     def handle_endtag(self, tag):
         if tag in ('script', 'style', 'iframe'):
@@ -349,6 +460,7 @@ def get_rss_entries(tree):
             entry['content'] = content.text
         else:
             entry['content'] = entry['description']
+        entry['_raw_xml'] = ET.tostring(item, encoding='unicode')
         entries.append(entry)
     return entries
 
@@ -405,6 +517,7 @@ def get_atom_entries(root):
             'content': content,
             'author': author,
         }
+        entry['_raw_xml'] = ET.tostring(item, encoding='unicode')
         entries.append(entry)
     return entries
 
@@ -415,8 +528,7 @@ def get_entries(tree):
     # Detect Atom feed by root tag
     if root.tag == '{http://www.w3.org/2005/Atom}feed' or root.tag == 'feed':
         return get_atom_entries(root)
-    else:
-        return get_rss_entries(tree)
+    return get_rss_entries(tree)
 
 
 def truncate_title(title, max_width):
@@ -426,10 +538,10 @@ def truncate_title(title, max_width):
     return title[:max_width - 1] + "…"
 
 
-def list_entries(scr, entries, selected=None, offset=0, height=20, selection_active=True, state=None):
+def list_entries(scr, entries, selected=None, offset=0, height=20, selection_active=True, state=None, width=None):
     """Display list of entries with optional selection highlight."""
-    term_width, _ = Term.size()
-    scr.writeln(f"{BOLD}Found {len(entries)} articles:{RESET}  {Color.DIM.value}[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]{RESET}")
+    term_width = width if width is not None else Term.size()[0]
+    scr.writeln(f"{BOLD}Found {len(entries)} articles:{RESET}  {DIM}[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]{RESET}")
     for i in range(offset, min(offset + height, len(entries))):
         entry = entries[i]
         date = entry['date'].split(' +')[0] if entry['date'] else ''
@@ -447,26 +559,26 @@ def list_entries(scr, entries, selected=None, offset=0, height=20, selection_act
                 scr.writeln(f"{BG_WHITE}{BLACK}     {date}{RESET}")
             else:
                 # Dimmed selection (gray)
-                scr.writeln(f"{Color.DIM.value}{REVERSE}{i+1:3}. {source_str}{title}{RESET}")
-                scr.writeln(f"{Color.DIM.value}{REVERSE}     {date}{RESET}")
+                scr.writeln(f"{DIM}{REVERSE}{i+1:3}. {source_str}{title}{RESET}")
+                scr.writeln(f"{DIM}{REVERSE}     {date}{RESET}")
         elif is_read:
             # Read articles: title in red
-            scr.writeln(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{Color.RED.value}{title}{RESET}")
-            scr.writeln(f"     {Color.DIM.value}{date}{RESET}")
+            scr.writeln(f"{PURP}{i+1:3}.{RESET} {DIM}{source_str}{RESET}{RED}{title}{RESET}")
+            scr.writeln(f"     {DIM}{date}{RESET}")
         else:
-            scr.writeln(f"{Color.PURP.value}{i+1:3}.{RESET} {Color.DIM.value}{source_str}{RESET}{BOLD}{title}{RESET}")
-            scr.writeln(f"     {Color.DIM.value}{date}{RESET}")
+            scr.writeln(f"{PURP}{i+1:3}.{RESET} {DIM}{source_str}{RESET}{BOLD}{title}{RESET}")
+            scr.writeln(f"     {DIM}{date}{RESET}")
 
 
 def show_article(entry, width=80):
     """Display a single article."""
     print(f"\n{'─' * width}")
-    print(f"{BOLD}{Color.PURP.value}{entry['title']}{RESET}")
+    print(f"{BOLD}{PURP}{entry['title']}{RESET}")
     author = entry.get('author', '')
     if author:
-        print(f"{Color.DIM.value}by {author}{RESET}")
-    print(f"{Color.DIM.value}{entry['date']}{RESET}")
-    print(f"{Color.PURP.value}{entry['link']}{RESET}")
+        print(f"{DIM}by {author}{RESET}")
+    print(f"{DIM}{entry['date']}{RESET}")
+    print(f"{PURP}{entry['link']}{RESET}")
     print(f"{'─' * width}\n")
 
     content = html_to_text(entry['content'], width)
@@ -477,11 +589,11 @@ def show_article(entry, width=80):
 def draw_number_bar(scr, written_number, active, width):
     """Draw the number input bar at the bottom."""
     label = "> "
-    num_str = written_number if written_number else ""
+    num_str = written_number or ""
     if active:
         scr.writeln(f"{BG_WHITE}{BLACK}{label}{num_str}_{' ' * (width - len(label) - len(num_str) - 1)}{RESET}")
     else:
-        scr.writeln(f"{Color.DIM.value}{label}{num_str}{RESET}")
+        scr.writeln(f"{DIM}{label}{num_str}{RESET}")
     scr.clear_to_end()  # Clear any leftover lines below
 
 
@@ -507,7 +619,7 @@ def interactive_mode(entries, width=80):
             offset = selected - visible_count + 1
 
         scr.home()
-        list_entries(scr, entries, selected, offset, visible_count, selection_active=not currently_writing_number, state=state)
+        list_entries(scr, entries, selected, offset, visible_count, selection_active=not currently_writing_number, state=state, width=width)
         draw_number_bar(scr, written_number, currently_writing_number, width)
         scr.flush()
 
@@ -547,21 +659,19 @@ def interactive_mode(entries, width=80):
                     selected = target
                     print(CLEAR_SCREEN, end='')
                     show_article(entries[selected], width)
-                    print(f"\n{Color.DIM.value}Press any key to continue...{RESET}")
+                    print(f"\n{DIM}Press any key to continue...{RESET}")
                     Term.getch()
                 written_number = ""
                 currently_writing_number = False
             else:
                 print(CLEAR_SCREEN, end='')
                 show_article(entries[selected], width)
-                print(f"\n{Color.DIM.value}Press any key to continue...{RESET}")
+                print(f"\n{DIM}Press any key to continue...{RESET}")
                 Term.getch()
 
 
 def parse_date(date_str):
     """Parse RSS (RFC 822) or Atom (ISO 8601) date string for sorting."""
-    from email.utils import parsedate_to_datetime
-    from datetime import datetime
     if not date_str:
         return None
     # Try RFC 822 (RSS)
@@ -598,44 +708,56 @@ def fetch_single_feed(name, feed_value):
         return (name, [], e)
 
 
-def fetch_all_feeds():
+def fetch_all_feeds(feeds):
     """Fetch all configured feeds concurrently and merge entries sorted by date."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     all_entries = []
     errors = []
 
-    print(f"{Color.DIM.value}Fetching {len(FEEDS)} feeds...{RESET}")
+    print(f"{DIM}Fetching {len(feeds)} feeds...{RESET}")
 
-    with ThreadPoolExecutor(max_workers=len(FEEDS)) as executor:
+    with ThreadPoolExecutor(max_workers=len(feeds)) as executor:
         futures = {
             executor.submit(fetch_single_feed, name, feed_value): name
-            for name, feed_value in FEEDS.items()
+            for name, feed_value in feeds.items()
         }
 
         for future in as_completed(futures):
             name, entries, error = future.result()
             if error:
                 errors.append(f"{name}: {error}")
-                print(f"{Color.RED.value}Error fetching {name}: {error}{RESET}")
+                print(f"{RED}Error fetching {name}: {error}{RESET}")
             else:
-                print(f"{Color.DIM.value}Fetched {name} ({len(entries)} articles){RESET}")
+                print(f"{DIM}Fetched {name} ({len(entries)} articles){RESET}")
                 all_entries.extend(entries)
 
-    if errors:
-        print(f"\n{Color.DIM.value}Press any key to continue...{RESET}")
+    if errors and sys.stdin.isatty():
+        print(f"\n{DIM}Press any key to continue...{RESET}")
         Term.getch()
 
-    from datetime import datetime
     all_entries.sort(key=lambda e: parse_date(e['date']) or datetime.min, reverse=True)
     return all_entries
 
 
+def _sort_by_date_desc(entries):
+    entries.sort(key=lambda e: parse_date(e.get('date', '')) or datetime.min, reverse=True)
+    return entries
+
+
+def update_cache_from_feeds(feeds):
+    """Fetch all configured feeds and persist new articles to the cache.
+
+    Returns (fetched_entries, all_writes_ok).
+    """
+    fetched = fetch_all_feeds(feeds)
+    ok = cache_save_entries(fetched)
+    return fetched, ok
+
+
 def main():
-    import argparse
+    feeds = load_feeds()
     parser = argparse.ArgumentParser(description='feed - KISS cli RSS reader with HTML rendering')
     parser.add_argument('feed', nargs='?', default=None,
-                        help=f"Feed URL or shortcut: {', '.join(FEEDS.keys())} (default: all)")
+                        help=f"Feed URL or shortcut: {', '.join(feeds.keys())} (default: all)")
     parser.add_argument('-l', '--list', action='store_true',
                         help='List articles without interactive mode')
     parser.add_argument('-n', '--number', type=int,
@@ -644,36 +766,40 @@ def main():
                         help='Terminal width (default: 80)')
     parser.add_argument('--no-color', action='store_true',
                         help='Disable ANSI colors')
+    parser.add_argument('--update', action='store_true',
+                        help='Fetch all feeds into the cache and exit (for cron).')
     args = parser.parse_args()
 
     if args.no_color:
-        global BOLD, ITALIC, BG_WHITE, BLACK, REVERSE, RESET
-        BOLD = ITALIC = BG_WHITE = BLACK = REVERSE = RESET = ''
-        for c in Color:
-            c._value_ = ''
+        disable_colors()
+
+    if args.update:
+        _, ok = update_cache_from_feeds(feeds)
+        sys.exit(0 if ok else 1)
 
     if args.feed is None:
-        # Fetch all feeds
-        entries = fetch_all_feeds()
+        update_cache_from_feeds(feeds)
+        entries = _sort_by_date_desc(cache_load_entries())
+    elif args.feed in feeds:
+        update_cache_from_feeds({args.feed: feeds[args.feed]})
+        cached = [e for e in cache_load_entries() if e.get('source') == args.feed]
+        entries = _sort_by_date_desc(cached)
     else:
-        # Resolve single feed URL
-        feed_value = FEEDS.get(args.feed, args.feed)
-        if isinstance(feed_value, str) and not feed_value.startswith('http'):
+        # Ad-hoc URL: live fetch, no cache
+        if not args.feed.startswith('http'):
             print(f"Unknown feed: {args.feed}")
-            print(f"Available shortcuts: {', '.join(FEEDS.keys())}")
+            print(f"Available shortcuts: {', '.join(feeds.keys())}")
             sys.exit(1)
-
-        url, cookies = get_feed_config(feed_value)
-        print(f"{Color.DIM.value}Fetching {url}...{RESET}")
+        print(f"{DIM}Fetching {args.feed}...{RESET}")
         try:
-            tree = fetch_feed(url, cookies)
-            entries = get_entries(tree)
+            tree = fetch_feed(args.feed)
+            entries = _sort_by_date_desc(get_entries(tree))
         except Exception as e:
             print(f"Error fetching feed: {e}")
             sys.exit(1)
 
     if not entries:
-        print("No entries found in feed.")
+        print("No entries found.")
         sys.exit(1)
 
     if args.number:
@@ -684,11 +810,17 @@ def main():
             sys.exit(1)
     elif args.list:
         scr = Screen()
-        list_entries(scr, entries, height=len(entries))
+        list_entries(scr, entries, height=len(entries), width=args.width)
         scr.flush()
     else:
         interactive_mode(entries, args.width)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except FeedError as e:
+        print(f"{RED}\n  !!  {e}  !!  \n{RESET}")
+        sys.exit(1)
+    except Exception:
+        raise

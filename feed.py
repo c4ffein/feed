@@ -41,6 +41,7 @@ FeedConfig = str | dict[str, str]
 RED = "\033[31m"
 GREEN = "\033[32m"
 PURP = "\033[34m"
+CYAN = "\033[36m"
 DIM = "\033[90m"
 WHITE = "\033[39m"
 BOLD = "\033[1m"
@@ -57,9 +58,9 @@ CLEAR_TO_END = "\033[J"
 
 def disable_colors():
     """Wipe all ANSI codes to empty strings (for --no-color)."""
-    global RED, GREEN, PURP, DIM, WHITE
+    global RED, GREEN, PURP, CYAN, DIM, WHITE
     global BOLD, ITALIC, REVERSE, BG_WHITE, BLACK, RESET
-    RED = GREEN = PURP = DIM = WHITE = ""
+    RED = GREEN = PURP = CYAN = DIM = WHITE = ""
     BOLD = ITALIC = REVERSE = BG_WHITE = BLACK = RESET = ""
 
 
@@ -567,9 +568,10 @@ def list_entries(scr, entries, selected=None, offset=0, height=20, selection_act
         is_read = state and is_article_read(state, entry)
         if i == selected:
             if selection_active:
-                # White/bright selection
-                scr.writeln(f"{BG_WHITE}{BLACK}{i + 1:3}. {source_str}{title}{RESET}")
-                scr.writeln(f"{BG_WHITE}{BLACK}     {date}{RESET}")
+                # Selected: title in green (unread) or cyan (read), no background
+                title_color = CYAN if is_read else GREEN
+                scr.writeln(f"{PURP}{i + 1:3}.{RESET} {DIM}{source_str}{RESET}{BOLD}{title_color}{title}{RESET}")
+                scr.writeln(f"     {DIM}{date}{RESET}")
             else:
                 # Dimmed selection (gray)
                 scr.writeln(f"{DIM}{REVERSE}{i + 1:3}. {source_str}{title}{RESET}")

@@ -17,7 +17,7 @@ from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import urlopen, Request
+from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
 # ANSI escape codes
@@ -65,23 +65,19 @@ class Term:
         try:
             tty.setraw(fd)
             ch = sys.stdin.read(1)
-            # If ESC, check for arrow key sequence
-            if ch == '\x1b':
-                # Wait up to 0.1s for more input
-                if select.select([sys.stdin], [], [], 0.1)[0]:
-                    ch2 = sys.stdin.read(1)
-                    if ch2 == '[':
-                        ch3 = sys.stdin.read(1)
-                        # Return arrow key codes
-                        if ch3 == 'A':
-                            return 'UP'
-                        elif ch3 == 'B':
-                            return 'DOWN'
-                        elif ch3 == 'C':
-                            return 'RIGHT'
-                        elif ch3 == 'D':
-                            return 'LEFT'
-                # Standalone ESC or unknown sequence
+            # If ESC, check for arrow key sequence (else falls through to standalone ESC)
+            if ch == '\x1b' and select.select([sys.stdin], [], [], 0.1)[0]:
+                ch2 = sys.stdin.read(1)
+                if ch2 == '[':
+                    ch3 = sys.stdin.read(1)
+                    if ch3 == 'A':
+                        return 'UP'
+                    if ch3 == 'B':
+                        return 'DOWN'
+                    if ch3 == 'C':
+                        return 'RIGHT'
+                    if ch3 == 'D':
+                        return 'LEFT'
             return ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -151,10 +147,7 @@ ARTICLES_DIR = CACHE_DIR / 'articles'
 EXAMPLE_FEEDS = {
     'example': 'https://example.com/feed.xml',
     'another_example': 'https://blog.example.org/rss',
-    'another_example_with_cookies': {
-        'url': 'https://forum.example.org/feed.xml',
-        'cookies': 'session_id=abc123'
-    },
+    'another_example_with_cookies': {'url': 'https://forum.example.org/feed.xml', 'cookies': 'session_id=abc123'},
 }
 
 
@@ -166,8 +159,8 @@ def load_feeds():
             return config.get('feeds', {})
     else:
         example = json.dumps({'feeds': EXAMPLE_FEEDS}, indent=2)
-        print(f"Config file not found: {CONFIG_FILE}\n")
-        print(f"Create it with your feeds:\n\n{example}")
+        print(f'Config file not found: {CONFIG_FILE}\n')
+        print(f'Create it with your feeds:\n\n{example}')
         sys.exit(1)
 
 
@@ -183,13 +176,10 @@ def get_source_from_url(url):
 
 def _migrate_state_ids(state):
     """Rewrite legacy base64 IDs (with /, +) to urlsafe form."""
-    sources = state.get("articles", {}).get("sources", {})
+    sources = state.get('articles', {}).get('sources', {})
     for src, articles in list(sources.items()):
         if any(('/' in k or '+' in k) for k in articles):
-            sources[src] = {
-                k.replace('/', '_').replace('+', '-'): v
-                for k, v in articles.items()
-            }
+            sources[src] = {k.replace('/', '_').replace('+', '-'): v for k, v in articles.items()}
     return state
 
 
@@ -198,7 +188,7 @@ def load_state():
     if STATE_FILE.exists():
         with open(STATE_FILE) as f:
             return _migrate_state_ids(json.load(f))
-    return {"articles": {"sources": {}}}
+    return {'articles': {'sources': {}}}
 
 
 def save_state(state):
@@ -239,12 +229,17 @@ def cache_save_entry(entry):
             with open(path) as f:
                 doc = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
-            raise FeedError(f"corrupt cache file {path}: {e}") from e
+            raise FeedError(f'corrupt cache file {path}: {e}') from e
         doc['last_seen_at'] = now
     else:
-        doc = {'first_seen_at': now, 'last_seen_at': now,
-               'source': source, 'url': entry['link'],
-               'raw_xml': raw_xml, 'parsed': parsed}
+        doc = {
+            'first_seen_at': now,
+            'last_seen_at': now,
+            'source': source,
+            'url': entry['link'],
+            'raw_xml': raw_xml,
+            'parsed': parsed,
+        }
 
     tmp = path.with_suffix('.json.tmp')
     with open(tmp, 'w') as f:
@@ -264,7 +259,7 @@ def cache_save_entries(entries):
         try:
             cache_save_entry(entry)
         except OSError as e:
-            print(f"{RED}cache write failed for {entry.get('link')}: {e}{RESET}")
+            print(f'{RED}cache write failed for {entry.get("link")}: {e}{RESET}')
             all_ok = False
     return all_ok
 
@@ -284,7 +279,7 @@ def cache_load_entries():
                 with open(art_file) as f:
                     doc = json.load(f)
             except (OSError, json.JSONDecodeError) as e:
-                raise FeedError(f"corrupt cache file {art_file}: {e}") from e
+                raise FeedError(f'corrupt cache file {art_file}: {e}') from e
             parsed = doc.get('parsed') or {}
             parsed.setdefault('source', doc.get('source', src_dir.name))
             entries.append(parsed)
@@ -295,22 +290,22 @@ def is_article_read(state, entry):
     """Check if an article is marked as read."""
     source = get_source_from_url(entry['link'])
     article_id = get_article_id(entry['link'])
-    sources = state.get("articles", {}).get("sources", {})
-    return sources.get(source, {}).get(article_id, {}).get("markedRead", False)
+    sources = state.get('articles', {}).get('sources', {})
+    return sources.get(source, {}).get(article_id, {}).get('markedRead', False)
 
 
 def toggle_article_read(state, entry):
     """Toggle an article's read status."""
     source = get_source_from_url(entry['link'])
     article_id = get_article_id(entry['link'])
-    if "articles" not in state:
-        state["articles"] = {"sources": {}}
-    if "sources" not in state["articles"]:
-        state["articles"]["sources"] = {}
-    if source not in state["articles"]["sources"]:
-        state["articles"]["sources"][source] = {}
-    current = state["articles"]["sources"][source].get(article_id, {}).get("markedRead", False)
-    state["articles"]["sources"][source][article_id] = {"markedRead": not current}
+    if 'articles' not in state:
+        state['articles'] = {'sources': {}}
+    if 'sources' not in state['articles']:
+        state['articles']['sources'] = {}
+    if source not in state['articles']['sources']:
+        state['articles']['sources'][source] = {}
+    current = state['articles']['sources'][source].get(article_id, {}).get('markedRead', False)
+    state['articles']['sources'][source][article_id] = {'markedRead': not current}
     save_state(state)
 
 
@@ -411,7 +406,7 @@ def wrap_text(text, width=80):
         lines = p.split('\n')
         wrapped_lines = []
         for line in lines:
-            if line.startswith('  ') or line.startswith('│'):  # preserve indented/quoted
+            if line.startswith(('  ', '│')):  # preserve indented/quoted
                 wrapped_lines.append(line)
             elif len(line) > width:
                 wrapped_lines.extend(textwrap.wrap(line, width))
@@ -467,29 +462,29 @@ def get_atom_entries(root):
     """Extract entries from Atom feed."""
     entries = []
     # Atom namespace
-    ATOM = '{http://www.w3.org/2005/Atom}'
+    atom_ns = '{http://www.w3.org/2005/Atom}'
 
-    atom_entries = root.findall(f'.//{ATOM}entry') or root.findall('.//entry')
+    atom_entries = root.findall(f'.//{atom_ns}entry') or root.findall('.//entry')
 
     for item in atom_entries:
         # Get link href attribute (Atom uses <link href="..."/>)
         # Prefer rel="alternate", fall back to first link
         link = ''
-        for link_elem in item.findall(f'{ATOM}link') or item.findall('link'):
+        for link_elem in item.findall(f'{atom_ns}link') or item.findall('link'):
             if link_elem.get('rel', 'alternate') == 'alternate':
                 link = link_elem.get('href', '')
                 break
         if not link:
-            link_elem = item.find(f'{ATOM}link')
+            link_elem = item.find(f'{atom_ns}link')
             if link_elem is None:
                 link_elem = item.find('link')
             link = link_elem.get('href', '') if link_elem is not None else ''
 
         # Get content or summary
-        content_elem = item.find(f'{ATOM}content')
+        content_elem = item.find(f'{atom_ns}content')
         if content_elem is None:
             content_elem = item.find('content')
-        summary_elem = item.find(f'{ATOM}summary')
+        summary_elem = item.find(f'{atom_ns}summary')
         if summary_elem is None:
             summary_elem = item.find('summary')
         content = ''
@@ -499,18 +494,20 @@ def get_atom_entries(root):
             content = summary_elem.text
 
         # Get author name
-        author_elem = item.find(f'{ATOM}author')
+        author_elem = item.find(f'{atom_ns}author')
         if author_elem is None:
             author_elem = item.find('author')
         author = ''
         if author_elem is not None:
-            author = author_elem.findtext(f'{ATOM}name', '') or author_elem.findtext('name', '')
+            author = author_elem.findtext(f'{atom_ns}name', '') or author_elem.findtext('name', '')
 
         entry = {
-            'title': item.findtext(f'{ATOM}title', '') or item.findtext('title', ''),
+            'title': item.findtext(f'{atom_ns}title', '') or item.findtext('title', ''),
             'link': link,
-            'date': item.findtext(f'{ATOM}published', '') or item.findtext(f'{ATOM}updated', '') \
-                    or item.findtext('published', '') or item.findtext('updated', ''),
+            'date': item.findtext(f'{atom_ns}published', '')
+            or item.findtext(f'{atom_ns}updated', '')
+            or item.findtext('published', '')
+            or item.findtext('updated', ''),
             'description': content,
             'content': content,
             'author': author,
@@ -524,7 +521,7 @@ def get_entries(tree):
     """Extract entries from RSS or Atom feed."""
     root = tree.getroot()
     # Detect Atom feed by root tag
-    if root.tag == '{http://www.w3.org/2005/Atom}feed' or root.tag == 'feed':
+    if root.tag in ('{http://www.w3.org/2005/Atom}feed', 'feed'):
         return get_atom_entries(root)
     return get_rss_entries(tree)
 
@@ -533,18 +530,19 @@ def truncate_title(title, max_width):
     """Truncate title with ellipsis if too long."""
     if len(title) <= max_width:
         return title
-    return title[:max_width - 1] + "…"
+    return title[: max_width - 1] + '…'
 
 
 def list_entries(scr, entries, selected=None, offset=0, height=20, selection_active=True, state=None, width=None):
     """Display list of entries with optional selection highlight."""
     term_width = width if width is not None else Term.size()[0]
-    scr.writeln(f"{BOLD}Found {len(entries)} articles:{RESET}  {DIM}[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]{RESET}")
+    help_hint = '[i/k: move, I/K: ×10, 0-9: jump, Enter: open, r: toggle read, q: quit]'  # noqa: RUF001
+    scr.writeln(f'{BOLD}Found {len(entries)} articles:{RESET}  {DIM}{help_hint}{RESET}')
     for i in range(offset, min(offset + height, len(entries))):
         entry = entries[i]
         date = entry['date'].split(' +')[0] if entry['date'] else ''
         source = entry.get('source', '')
-        source_str = f"[{source}] " if source else ''
+        source_str = f'[{source}] ' if source else ''
         # Calculate prefix length: "  8. [source] " = 5 chars + source_str
         prefix_len = 5 + len(source_str)
         max_title_width = term_width - prefix_len - 1
@@ -553,45 +551,45 @@ def list_entries(scr, entries, selected=None, offset=0, height=20, selection_act
         if i == selected:
             if selection_active:
                 # White/bright selection
-                scr.writeln(f"{BG_WHITE}{BLACK}{i+1:3}. {source_str}{title}{RESET}")
-                scr.writeln(f"{BG_WHITE}{BLACK}     {date}{RESET}")
+                scr.writeln(f'{BG_WHITE}{BLACK}{i + 1:3}. {source_str}{title}{RESET}')
+                scr.writeln(f'{BG_WHITE}{BLACK}     {date}{RESET}')
             else:
                 # Dimmed selection (gray)
-                scr.writeln(f"{DIM}{REVERSE}{i+1:3}. {source_str}{title}{RESET}")
-                scr.writeln(f"{DIM}{REVERSE}     {date}{RESET}")
+                scr.writeln(f'{DIM}{REVERSE}{i + 1:3}. {source_str}{title}{RESET}')
+                scr.writeln(f'{DIM}{REVERSE}     {date}{RESET}')
         elif is_read:
             # Read articles: title in red
-            scr.writeln(f"{PURP}{i+1:3}.{RESET} {DIM}{source_str}{RESET}{RED}{title}{RESET}")
-            scr.writeln(f"     {DIM}{date}{RESET}")
+            scr.writeln(f'{PURP}{i + 1:3}.{RESET} {DIM}{source_str}{RESET}{RED}{title}{RESET}')
+            scr.writeln(f'     {DIM}{date}{RESET}')
         else:
-            scr.writeln(f"{PURP}{i+1:3}.{RESET} {DIM}{source_str}{RESET}{BOLD}{title}{RESET}")
-            scr.writeln(f"     {DIM}{date}{RESET}")
+            scr.writeln(f'{PURP}{i + 1:3}.{RESET} {DIM}{source_str}{RESET}{BOLD}{title}{RESET}')
+            scr.writeln(f'     {DIM}{date}{RESET}')
 
 
 def show_article(entry, width=80):
     """Display a single article."""
-    print(f"\n{'─' * width}")
-    print(f"{BOLD}{PURP}{entry['title']}{RESET}")
+    print(f'\n{"─" * width}')
+    print(f'{BOLD}{PURP}{entry["title"]}{RESET}')
     author = entry.get('author', '')
     if author:
-        print(f"{DIM}by {author}{RESET}")
-    print(f"{DIM}{entry['date']}{RESET}")
-    print(f"{PURP}{entry['link']}{RESET}")
-    print(f"{'─' * width}\n")
+        print(f'{DIM}by {author}{RESET}')
+    print(f'{DIM}{entry["date"]}{RESET}')
+    print(f'{PURP}{entry["link"]}{RESET}')
+    print(f'{"─" * width}\n')
 
     content = html_to_text(entry['content'], width)
     print(wrap_text(content, width))
-    print(f"\n{'─' * width}")
+    print(f'\n{"─" * width}')
 
 
 def draw_number_bar(scr, written_number, active, width):
     """Draw the number input bar at the bottom."""
-    label = "> "
-    num_str = written_number or ""
+    label = '> '
+    num_str = written_number or ''
     if active:
-        scr.writeln(f"{BG_WHITE}{BLACK}{label}{num_str}_{' ' * (width - len(label) - len(num_str) - 1)}{RESET}")
+        scr.writeln(f'{BG_WHITE}{BLACK}{label}{num_str}_{" " * (width - len(label) - len(num_str) - 1)}{RESET}')
     else:
-        scr.writeln(f"{DIM}{label}{num_str}{RESET}")
+        scr.writeln(f'{DIM}{label}{num_str}{RESET}')
     scr.clear_to_end()  # Clear any leftover lines below
 
 
@@ -602,7 +600,7 @@ def interactive_mode(entries, width=80):
     term_height -= 6  # Leave room for header/footer/number bar
     visible_count = max(1, term_height // 2)  # 2 lines per entry
     offset = 0
-    written_number = ""
+    written_number = ''
     currently_writing_number = False
     state = load_state()
     scr = Screen()
@@ -617,7 +615,16 @@ def interactive_mode(entries, width=80):
             offset = selected - visible_count + 1
 
         scr.home()
-        list_entries(scr, entries, selected, offset, visible_count, selection_active=not currently_writing_number, state=state, width=width)
+        list_entries(
+            scr,
+            entries,
+            selected,
+            offset,
+            visible_count,
+            selection_active=not currently_writing_number,
+            state=state,
+            width=width,
+        )
         draw_number_bar(scr, written_number, currently_writing_number, width)
         scr.flush()
 
@@ -627,19 +634,19 @@ def interactive_mode(entries, width=80):
             print()
             break
 
-        if key == 'q' or key == '\x03' or key == '\x1b':  # q, Ctrl+C, or Escape
+        if key in ('q', '\x03', '\x1b'):  # q, Ctrl+C, or Escape
             break
-        elif key in '0123456789':
+        if key in '0123456789':
             written_number += key
             currently_writing_number = True
-        elif key == '\x7f' or key == '\x08':  # Backspace
+        elif key in ('\x7f', '\x08'):  # Backspace
             if written_number:
                 written_number = written_number[:-1]
             currently_writing_number = True  # Backspace always focuses the number bar
-        elif key == 'k' or key == '\x0b' or key == 'DOWN':  # down (k, Ctrl+K, or arrow)
+        elif key in ('k', '\x0b', 'DOWN'):  # down (k, Ctrl+K, or arrow)
             selected = min(selected + 1, len(entries) - 1)
             currently_writing_number = False
-        elif key == 'i' or key == '\x1e' or key == 'UP':  # up (i, Ctrl+^, or arrow)
+        elif key in ('i', '\x1e', 'UP'):  # up (i, Ctrl+^, or arrow)
             selected = max(selected - 1, 0)
             currently_writing_number = False
         elif key == 'K':  # down 10
@@ -650,21 +657,21 @@ def interactive_mode(entries, width=80):
             currently_writing_number = False
         elif key == 'r':  # Toggle read status
             toggle_article_read(state, entries[selected])
-        elif key == '\r' or key == '\n':  # Enter
+        elif key in ('\r', '\n'):  # Enter
             if currently_writing_number and written_number:
                 target = int(written_number) - 1  # Convert to 0-indexed
                 if 0 <= target < len(entries):
                     selected = target
                     print(CLEAR_SCREEN, end='')
                     show_article(entries[selected], width)
-                    print(f"\n{DIM}Press any key to continue...{RESET}")
+                    print(f'\n{DIM}Press any key to continue...{RESET}')
                     Term.getch()
-                written_number = ""
+                written_number = ''
                 currently_writing_number = False
             else:
                 print(CLEAR_SCREEN, end='')
                 show_article(entries[selected], width)
-                print(f"\n{DIM}Press any key to continue...{RESET}")
+                print(f'\n{DIM}Press any key to continue...{RESET}')
                 Term.getch()
 
 
@@ -711,25 +718,22 @@ def fetch_all_feeds(feeds):
     all_entries = []
     errors = []
 
-    print(f"{DIM}Fetching {len(feeds)} feeds...{RESET}")
+    print(f'{DIM}Fetching {len(feeds)} feeds...{RESET}')
 
     with ThreadPoolExecutor(max_workers=len(feeds)) as executor:
-        futures = {
-            executor.submit(fetch_single_feed, name, feed_value): name
-            for name, feed_value in feeds.items()
-        }
+        futures = {executor.submit(fetch_single_feed, name, feed_value): name for name, feed_value in feeds.items()}
 
         for future in as_completed(futures):
             name, entries, error = future.result()
             if error:
-                errors.append(f"{name}: {error}")
-                print(f"{RED}Error fetching {name}: {error}{RESET}")
+                errors.append(f'{name}: {error}')
+                print(f'{RED}Error fetching {name}: {error}{RESET}')
             else:
-                print(f"{DIM}Fetched {name} ({len(entries)} articles){RESET}")
+                print(f'{DIM}Fetched {name} ({len(entries)} articles){RESET}')
                 all_entries.extend(entries)
 
     if errors and sys.stdin.isatty():
-        print(f"\n{DIM}Press any key to continue...{RESET}")
+        print(f'\n{DIM}Press any key to continue...{RESET}')
         Term.getch()
 
     all_entries.sort(key=lambda e: parse_date(e['date']) or datetime.min, reverse=True)
@@ -754,18 +758,14 @@ def update_cache_from_feeds(feeds):
 def main():
     feeds = load_feeds()
     parser = argparse.ArgumentParser(description='feed - KISS cli RSS reader with HTML rendering')
-    parser.add_argument('feed', nargs='?', default=None,
-                        help=f"Feed URL or shortcut: {', '.join(feeds.keys())} (default: all)")
-    parser.add_argument('-l', '--list', action='store_true',
-                        help='List articles without interactive mode')
-    parser.add_argument('-n', '--number', type=int,
-                        help='Show article N directly')
-    parser.add_argument('-w', '--width', type=int, default=80,
-                        help='Terminal width (default: 80)')
-    parser.add_argument('--no-color', action='store_true',
-                        help='Disable ANSI colors')
-    parser.add_argument('--update', action='store_true',
-                        help='Fetch all feeds into the cache and exit (for cron).')
+    parser.add_argument(
+        'feed', nargs='?', default=None, help=f'Feed URL or shortcut: {", ".join(feeds.keys())} (default: all)'
+    )
+    parser.add_argument('-l', '--list', action='store_true', help='List articles without interactive mode')
+    parser.add_argument('-n', '--number', type=int, help='Show article N directly')
+    parser.add_argument('-w', '--width', type=int, default=80, help='Terminal width (default: 80)')
+    parser.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
+    parser.add_argument('--update', action='store_true', help='Fetch all feeds into the cache and exit (for cron).')
     args = parser.parse_args()
 
     if args.no_color:
@@ -785,26 +785,26 @@ def main():
     else:
         # Ad-hoc URL: live fetch, no cache
         if not args.feed.startswith('http'):
-            print(f"Unknown feed: {args.feed}")
-            print(f"Available shortcuts: {', '.join(feeds.keys())}")
+            print(f'Unknown feed: {args.feed}')
+            print(f'Available shortcuts: {", ".join(feeds.keys())}')
             sys.exit(1)
-        print(f"{DIM}Fetching {args.feed}...{RESET}")
+        print(f'{DIM}Fetching {args.feed}...{RESET}')
         try:
             tree = fetch_feed(args.feed)
             entries = _sort_by_date_desc(get_entries(tree))
         except Exception as e:
-            print(f"Error fetching feed: {e}")
+            print(f'Error fetching feed: {e}')
             sys.exit(1)
 
     if not entries:
-        print("No entries found.")
+        print('No entries found.')
         sys.exit(1)
 
     if args.number:
         if 1 <= args.number <= len(entries):
             show_article(entries[args.number - 1], args.width)
         else:
-            print(f"Invalid article number. Choose 1-{len(entries)}")
+            print(f'Invalid article number. Choose 1-{len(entries)}')
             sys.exit(1)
     elif args.list:
         scr = Screen()
@@ -818,7 +818,7 @@ if __name__ == '__main__':
     try:
         main()
     except FeedError as e:
-        print(f"{RED}\n  !!  {e}  !!  \n{RESET}")
+        print(f'{RED}\n  !!  {e}  !!  \n{RESET}')
         sys.exit(1)
     except Exception:
         raise

@@ -54,6 +54,8 @@ CLEAR_SCREEN = "\033[2J\033[H"
 HOME = "\033[H"
 CLEAR_LINE = "\033[K"
 CLEAR_TO_END = "\033[J"
+HIDE_CURSOR = "\033[?25l"
+SHOW_CURSOR = "\033[?25h"
 
 
 def disable_colors():
@@ -602,18 +604,32 @@ def show_article(entry: Entry, width: int = 80) -> None:
 
 
 def draw_number_bar(scr, written_number, active, width):
-    """Draw the number input bar at the bottom."""
+    """
+    Draw the number input bar at the bottom.
+    No trailing newline: leaves the cursor on the bar's row instead of dropping to a blank row below it.
+    """
     label = "> "
     num_str = written_number or ""
     if active:
-        scr.writeln(f"{BG_WHITE}{BLACK}{label}{num_str}_{' ' * (width - len(label) - len(num_str) - 1)}{RESET}")
+        scr.write(f"{BG_WHITE}{BLACK}{label}{num_str}_{' ' * (width - len(label) - len(num_str) - 1)}{RESET}")
     else:
-        scr.writeln(f"{DIM}{label}{num_str}{RESET}")
+        scr.write(f"{DIM}{label}{num_str}{RESET}")
+    scr.clear_line()  # Wipe trailing chars on the bar's row from a longer previous frame
     scr.clear_to_end()  # Clear any leftover lines below
 
 
 def interactive_mode(entries: list[Entry], width: int = 80) -> None:
     """Interactive article browser with vim-style navigation."""
+    Term.write(HIDE_CURSOR)
+    try:
+        _interactive_mode_inner(entries, width)
+    finally:
+        # Restore cursor + hand back a clean canvas on exit (q, Ctrl-C, exception).
+        Term.write(SHOW_CURSOR + CLEAR_SCREEN)
+
+
+def _interactive_mode_inner(entries: list[Entry], width: int = 80) -> None:
+    """Interactive browser body — wrapped by interactive_mode for cursor hide/show."""
     selected = 0
     _, term_height = Term.size()
     term_height -= 6  # Leave room for header/footer/number bar

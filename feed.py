@@ -11,7 +11,7 @@ import termios
 import textwrap
 import tty
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
@@ -240,7 +240,7 @@ def cache_save_entry(entry):
     path = _article_cache_path(source, article_id)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     raw_xml = entry.get("_raw_xml")
     parsed = {k: v for k, v in entry.items() if not k.startswith("_")}
 
@@ -448,6 +448,37 @@ def fetch_feed(url: str, cookies: str | None = None) -> ET.ElementTree:
         return ET.parse(response)
 
 
+# Title allowlist: printable ASCII (0x20-0x7E) + Latin-1 accented letters
+# (À-Ö, Ø-ö, ø-ÿ; the multiplication 0xD7 and division 0xF7 signs are excluded).
+# Anything else — CJK, emoji, symbols, control/undisplayable bytes — is rejected.
+_TITLE_ALLOWED_CHARS = frozenset(
+    chr(c) for start, end in ((0x20, 0x7E), (0xC0, 0xD6), (0xD8, 0xF6), (0xF8, 0xFF)) for c in range(start, end + 1)
+)
+
+
+def sanitize_title(title: str) -> str:
+    """Normalize a feed title for safe single-line display.
+
+    Titles come straight from feed XML. Only an allowlist of characters is
+    permitted verbatim: printable ASCII and Latin-1 accented letters (é, à,
+    ñ, ü, …). Newlines and tabs
+    (\\n, \\r, \\t) collapse to a single space; other control / non-displayable
+    characters outside the allowlist below become the Unicode replacement
+    character U+FFFD (CJK, emoji, symbols and controls are all rejected).
+    Whitespace runs are collapsed and the result stripped, so a title
+    can never inject a newline into the rendered list.
+    """
+    out = []
+    for ch in title:
+        if ch in "\n\r\t":
+            out.append(" ")
+        elif ch in _TITLE_ALLOWED_CHARS:
+            out.append(ch)
+        else:
+            out.append("�")  # U+FFFD: character not on the allowlist
+    return " ".join("".join(out).split())
+
+
 def get_rss_entries(tree: ET.ElementTree) -> list[Entry]:
     """Extract entries from RSS feed."""
     entries: list[Entry] = []
@@ -461,7 +492,7 @@ def get_rss_entries(tree: ET.ElementTree) -> list[Entry]:
         author = item.findtext("dc:creator", "", ns) or item.findtext("author", "")
 
         entry = {
-            "title": item.findtext("title", ""),
+            "title": sanitize_title(item.findtext("title", "")),
             "link": item.findtext("link", ""),
             "date": item.findtext("pubDate", ""),
             "description": item.findtext("description", ""),
@@ -522,7 +553,7 @@ def get_atom_entries(root: ET.Element) -> list[Entry]:
             author = author_elem.findtext(f"{atom_ns}name", "") or author_elem.findtext("name", "")
 
         entry = {
-            "title": item.findtext(f"{atom_ns}title", "") or item.findtext("title", ""),
+            "title": sanitize_title(item.findtext(f"{atom_ns}title", "") or item.findtext("title", "")),
             "link": link,
             "date": item.findtext(f"{atom_ns}published", "")
             or item.findtext(f"{atom_ns}updated", "")
@@ -718,7 +749,7 @@ def parse_date(date_str: str) -> datetime | None:
         return parsedate_to_datetime(date_str)
     except (TypeError, ValueError):
         try:
-            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            return datetime.fromisoformat(date_str)  # 3.11+ accepts a trailing "Z"
         except (TypeError, ValueError):
             return None
 
